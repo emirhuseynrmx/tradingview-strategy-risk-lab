@@ -12,5 +12,4 @@ def test_train_strategy_risk_model() -> None:
     assert report.rows >= 30
     assert 0 <= report.roc_auc <= 1
     assert report.top_features
-    assert "DiCE" in report.counterfactual_hint
-
+    assert "counterfactual" in report.counterfactual_hint

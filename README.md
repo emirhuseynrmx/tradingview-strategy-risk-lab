@@ -19,6 +19,16 @@ flowchart LR
 
 TradingView exports show trades, but they do not explain which conditions make a strategy fragile. This repo converts trade history into a risk model that can be inspected before a strategy is trusted.
 
+## Sample Output
+
+The committed sample report is generated from Kaggle AAPL market data converted into a
+TradingView-style trade export.
+
+![Strategy risk report preview](docs/samples/strategy_risk_report.png)
+
+- [PDF report](docs/samples/strategy_risk_report.pdf)
+- [Prepared trade export](examples/trades.csv)
+
 ## Stack
 
 Litestar, Pydantic v2, pandas, scikit-learn, SHAP, DiCE, Typer, pytest, ruff.
@@ -29,6 +39,7 @@ Litestar, Pydantic v2, pandas, scikit-learn, SHAP, DiCE, Typer, pytest, ruff.
 python -m venv .venv
 .venv\Scripts\activate
 pip install -e ".[dev]"
+tv-risk-prepare-kaggle --out examples/trades.csv
 python -m pytest
 python -m ruff check .
 tv-risk-lab train
@@ -50,5 +61,8 @@ uvicorn tradingview_strategy_risk_lab.api:app --reload
 
 ## Notes
 
-This is a strategy review tool, not an execution system. It is meant to stop weak strategies earlier, not automate live trading.
+This is a strategy review tool, not an execution system. The public sample is prepared from
+Kaggle AAPL OHLC data. The model uses only setup fields known before exit; realized PnL is used
+only as the label.
 
+See [Leakage Policy](docs/leakage_policy.md) for the zero-lookahead contract.

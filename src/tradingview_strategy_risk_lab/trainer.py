@@ -39,8 +39,13 @@ def train_strategy_risk_model(frame: pd.DataFrame, config: TrainingConfig) -> St
     return StrategyRiskReport(
         rows=len(frame),
         bad_trade_rate=round(float(target.mean()), 4),
+        win_rate=round(float((frame["pnl_r"] > 0).mean()), 4),
+        profit_factor=_profit_factor(frame["pnl_r"]),
+        average_r=round(float(frame["pnl_r"].mean()), 4),
+        max_drawdown_r=_max_drawdown(frame["pnl_r"]),
         roc_auc=round(float(auc), 4),
         top_features=top_features,
+        filter_suggestions=_filter_suggestions(frame),
         counterfactual_hint=_counterfactual_hint(top_features),
     )
 
@@ -57,5 +62,51 @@ def _counterfactual_hint(top_features: list[dict[str, float | str]]) -> str:
     if not top_features:
         return "No stable driver found."
     feature = str(top_features[0]["feature"])
-    return f"Use DiCE to search how changing {feature} moves a trade away from high-risk."
+    return (
+        f"Start the counterfactual review with {feature}. Compare the bad-trade rate before "
+        "and after tightening that condition before using it as a live filter."
+    )
 
+
+def _profit_factor(pnl_r: pd.Series) -> float:
+    gains = float(pnl_r[pnl_r > 0].sum())
+    losses = abs(float(pnl_r[pnl_r < 0].sum()))
+    if losses == 0:
+        return round(gains, 4)
+    return round(gains / losses, 4)
+
+
+def _max_drawdown(pnl_r: pd.Series) -> float:
+    equity = pnl_r.cumsum()
+    drawdown = equity - equity.cummax()
+    return round(abs(float(drawdown.min())), 4)
+
+
+def _filter_suggestions(frame: pd.DataFrame) -> list[dict[str, float | str]]:
+    suggestions: list[dict[str, float | str]] = []
+    bad_trade = frame["pnl_r"] <= 0
+    candidates = [
+        ("atr_pct", ">=", float(frame["atr_pct"].quantile(0.75))),
+        ("volume_z", "<=", float(frame["volume_z"].quantile(0.25))),
+        ("trend_score", "<=", float(frame["trend_score"].quantile(0.25))),
+    ]
+    overall_bad_rate = float(bad_trade.mean())
+    for feature, operator, threshold in candidates:
+        mask = frame[feature] >= threshold if operator == ">=" else frame[feature] <= threshold
+        if int(mask.sum()) < 3:
+            continue
+        condition_bad_rate = float(bad_trade[mask].mean())
+        if condition_bad_rate <= overall_bad_rate:
+            continue
+        suggestions.append(
+            {
+                "condition": f"{feature} {operator} {threshold:.4f}",
+                "bad_trade_rate": round(condition_bad_rate, 4),
+                "baseline_bad_trade_rate": round(overall_bad_rate, 4),
+                "suggested_filter": (
+                    f"Review trades where {feature} is {operator} {threshold:.4f}; "
+                    "do not deploy the filter until it survives holdout review."
+                ),
+            }
+        )
+    return suggestions[:3]

@@ -46,7 +46,11 @@ class StrategyRiskReport(BaseModel):
 
     rows: int
     bad_trade_rate: float
+    win_rate: float
+    profit_factor: float
+    average_r: float
+    max_drawdown_r: float
     roc_auc: float
     top_features: list[dict[str, float | str]]
+    filter_suggestions: list[dict[str, float | str]]
     counterfactual_hint: str
-
