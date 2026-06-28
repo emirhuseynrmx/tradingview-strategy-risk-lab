@@ -11,5 +11,10 @@ def test_train_strategy_risk_model() -> None:
 
     assert report.rows >= 30
     assert 0 <= report.roc_auc <= 1
+    assert report.holdout_rows > 0
+    assert {item.check for item in report.evidence_checks} >= {
+        "holdout_split",
+        "zero_lookahead_features",
+    }
     assert report.top_features
     assert "counterfactual" in report.counterfactual_hint

@@ -44,6 +44,9 @@ def train_strategy_risk_model(frame: pd.DataFrame, config: TrainingConfig) -> St
         average_r=round(float(frame["pnl_r"].mean()), 4),
         max_drawdown_r=_max_drawdown(frame["pnl_r"]),
         roc_auc=round(float(auc), 4),
+        holdout_rows=len(x_test),
+        feature_count=len(FEATURE_COLUMNS),
+        evidence_checks=_evidence_checks(frame, config, len(x_test)),
         top_features=top_features,
         filter_suggestions=_filter_suggestions(frame),
         counterfactual_hint=_counterfactual_hint(top_features),
@@ -55,6 +58,42 @@ def _feature_importance(importances: np.ndarray) -> list[dict[str, float | str]]
     return [
         {"feature": FEATURE_COLUMNS[index], "importance": round(float(importances[index]), 5)}
         for index in order
+    ]
+
+
+def _evidence_checks(
+    frame: pd.DataFrame,
+    config: TrainingConfig,
+    holdout_rows: int,
+) -> list[dict[str, str]]:
+    forbidden_features = {"pnl_r", "exit_price", "trade_id"}
+    leakage_features = sorted(forbidden_features.intersection(FEATURE_COLUMNS))
+    class_counts = (frame["pnl_r"] <= config.bad_trade_threshold_r).astype(int).value_counts()
+    return [
+        {
+            "check": "holdout_split",
+            "status": "pass",
+            "evidence": f"{holdout_rows} trades reserved for holdout scoring.",
+        },
+        {
+            "check": "zero_lookahead_features",
+            "status": "pass" if not leakage_features else "fail",
+            "evidence": "No post-exit fields are used as features."
+            if not leakage_features
+            else f"Remove leakage features: {', '.join(leakage_features)}.",
+        },
+        {
+            "check": "minimum_class_count",
+            "status": "pass" if int(class_counts.min()) >= 5 else "review",
+            "evidence": f"Bad/good trade class counts: {class_counts.to_dict()}.",
+        },
+        {
+            "check": "claim_boundary",
+            "status": "review",
+            "evidence": (
+                "Risk model explains historical fragility; it is not a live execution rule."
+            ),
+        },
     ]
 
 

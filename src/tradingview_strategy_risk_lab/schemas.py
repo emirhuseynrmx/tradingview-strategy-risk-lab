@@ -41,6 +41,14 @@ class TrainRequest(BaseModel):
     config: TrainingConfig = Field(default_factory=TrainingConfig)
 
 
+class EvidenceCheck(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    check: str
+    status: str
+    evidence: str
+
+
 class StrategyRiskReport(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -51,6 +59,9 @@ class StrategyRiskReport(BaseModel):
     average_r: float
     max_drawdown_r: float
     roc_auc: float
+    holdout_rows: int
+    feature_count: int
+    evidence_checks: list[EvidenceCheck]
     top_features: list[dict[str, float | str]]
     filter_suggestions: list[dict[str, float | str]]
     counterfactual_hint: str
