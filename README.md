@@ -24,7 +24,7 @@ TradingView exports show trades, but they do not explain which conditions make a
 The committed sample report is generated from Kaggle AAPL market data converted into a
 TradingView-style trade export.
 
-![Strategy risk report preview](docs/samples/strategy_risk_report.png)
+![Strategy risk report preview](docs/assets/strategy-risk-report-preview.png)
 
 - [PDF report](docs/samples/strategy_risk_report.pdf)
 - [Prepared trade export](examples/trades.csv)
@@ -66,3 +66,10 @@ Kaggle AAPL OHLC data. The model uses only setup fields known before exit; reali
 only as the label.
 
 See [Leakage Policy](docs/leakage_policy.md) for the zero-lookahead contract.
+
+## Evidence Contract
+
+- Features are built only from setup fields known before trade exit.
+- Realized PnL is used as the label, not as an input feature.
+- SHAP explains model drivers; DiCE is constrained to actionable setup fields.
+- Holdout metrics and the leakage policy are part of the committed report workflow.

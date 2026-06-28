@@ -15,42 +15,76 @@ def build_report_typ(csv_path: Path = Path("examples/trades.csv")) -> str:
         f'  [{item["feature"]}], [{item["importance"]}],'
         for item in report.top_features
     )
-    rows_card = _metric_card("Trades", str(report.rows))
-    bad_rate_card = _metric_card("Bad-trade rate", str(report.bad_trade_rate))
-    auc_card = _metric_card("ROC-AUC", str(report.roc_auc))
-    return f"""#set page(margin: 16mm)
+    return f"""#set page(margin: 15mm)
 #set text(font: "Arial", size: 10pt)
+#set heading(numbering: none)
 
-#text(size: 18pt, weight: "bold")[TradingView Strategy Risk Lab]
+#let ink = rgb("#111827")
+#let muted = rgb("#64748b")
+#let panel = rgb("#f3f6fb")
+#let line = rgb("#d7dee8")
+#let risk = rgb("#b91c1c")
 
-Model-training report for a TradingView trade export.
+#let card(label, value, note: none) = block[
+  #rect(fill: panel, radius: 6pt, inset: 9pt, width: 100%)[
+    #text(size: 8pt, fill: muted, weight: "bold")[#upper(label)]
+    #linebreak()
+    #text(size: 19pt, fill: ink, weight: "bold")[#value]
+    #if note != none [#linebreak() #text(size: 8pt, fill: muted)[#note]]
+  ]
+]
+
+#let check(label, value) = block[
+  #text(weight: "bold")[#label]
+  #linebreak()
+  #text(fill: muted)[#value]
+]
+
+#text(size: 22pt, weight: "bold", fill: ink)[TradingView Strategy Risk Lab]
+
+#text(fill: muted)[
+  Model-training report for a TradingView trade export. The report reviews fragile
+  setups with holdout metrics, SHAP drivers, and a zero-lookahead feature boundary.
+]
 
 #grid(columns: (1fr, 1fr, 1fr), gutter: 8pt)[
-{rows_card}
+  #card("Trades", "{report.rows}", note: "validated rows")
 ][
-{bad_rate_card}
+  #card("Bad-trade rate", "{report.bad_trade_rate}", note: "label prevalence")
 ][
-{auc_card}
+  #card("ROC-AUC", "{report.roc_auc}", note: "holdout score")
 ]
 
 #v(10pt)
-#text(size: 12pt, weight: "bold")[Top Risk Drivers]
-
-#table(columns: (1fr, 1fr), [Feature], [Importance],
+#grid(columns: (1.45fr, 1fr), gutter: 14pt)[
+  #text(size: 13pt, weight: "bold")[Top Risk Drivers]
+  #v(4pt)
+  #table(
+    columns: (1fr, .7fr),
+    stroke: line,
+    inset: 5pt,
+    [*Feature*], [*Importance*],
 {feature_rows}
-)
+  )
+][
+  #text(size: 13pt, weight: "bold")[Evidence Contract]
+  #v(4pt)
+  #block(stroke: line, radius: 6pt, inset: 8pt)[
+    #check("Feature timing", "Only setup fields known before exit are model inputs.")
+    #v(5pt)
+    #check("Label boundary", "Realized PnL is used only to define the target.")
+    #v(5pt)
+    #check("Explainability", "SHAP shows drivers; DiCE stays on actionable fields.")
+    #v(5pt)
+    #check("Usage", "This is strategy review, not live execution.")
+  ]
+]
 
-#v(8pt)
-#text(weight: "bold")[Counterfactual next step:] {report.counterfactual_hint}
+#v(10pt)
+#block(fill: rgb("#fef2f2"), radius: 6pt, inset: 8pt)[
+  #text(weight: "bold", fill: risk)[Counterfactual next step:] {report.counterfactual_hint}
+]
 """
-
-
-def _metric_card(label: str, value: str) -> str:
-    return (
-        f'  #block(fill: rgb("#f3f6fb"), radius: 4pt, inset: 8pt)'
-        f'[{label}\\ #text(size: 18pt, weight: "bold")[{value}]]'
-    )
-
 
 def write_report(output_dir: Path = Path("docs/samples")) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -66,3 +100,7 @@ def write_report(output_dir: Path = Path("docs/samples")) -> Path:
 
 def main() -> None:
     print(write_report())
+
+
+if __name__ == "__main__":
+    main()
