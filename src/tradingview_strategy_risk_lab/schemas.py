@@ -63,5 +63,7 @@ class StrategyRiskReport(BaseModel):
     feature_count: int
     evidence_checks: list[EvidenceCheck]
     top_features: list[dict[str, float | str]]
+    shap_features: list[dict[str, float | str]] = Field(default_factory=list)
     filter_suggestions: list[dict[str, float | str]]
     counterfactual_hint: str
+    counterfactual_suggestions: list[str] = Field(default_factory=list)

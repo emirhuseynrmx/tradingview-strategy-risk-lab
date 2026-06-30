@@ -7,6 +7,10 @@ from sklearn.metrics import roc_auc_score
 from sklearn.model_selection import train_test_split
 
 from tradingview_strategy_risk_lab.data import FEATURE_COLUMNS
+from tradingview_strategy_risk_lab.explainability import (
+    compute_shap_importances,
+    make_counterfactual_suggestions,
+)
 from tradingview_strategy_risk_lab.schemas import StrategyRiskReport, TrainingConfig
 
 
@@ -36,9 +40,18 @@ def train_strategy_risk_model(frame: pd.DataFrame, config: TrainingConfig) -> St
     auc = roc_auc_score(y_test, probabilities)
 
     top_features = _feature_importance(model.feature_importances_)
+    bad_trade_rate = round(float(target.mean()), 4)
+
+    try:
+        shap_features = compute_shap_importances(model, x_test.values, FEATURE_COLUMNS)
+    except Exception:
+        shap_features = []
+
+    cf_suggestions = make_counterfactual_suggestions(shap_features or top_features, bad_trade_rate)
+
     return StrategyRiskReport(
         rows=len(frame),
-        bad_trade_rate=round(float(target.mean()), 4),
+        bad_trade_rate=bad_trade_rate,
         win_rate=round(float((frame["pnl_r"] > 0).mean()), 4),
         profit_factor=_profit_factor(frame["pnl_r"]),
         average_r=round(float(frame["pnl_r"].mean()), 4),
@@ -48,8 +61,10 @@ def train_strategy_risk_model(frame: pd.DataFrame, config: TrainingConfig) -> St
         feature_count=len(FEATURE_COLUMNS),
         evidence_checks=_evidence_checks(frame, config, len(x_test)),
         top_features=top_features,
+        shap_features=shap_features,
         filter_suggestions=_filter_suggestions(frame),
         counterfactual_hint=_counterfactual_hint(top_features),
+        counterfactual_suggestions=cf_suggestions,
     )
 
 
