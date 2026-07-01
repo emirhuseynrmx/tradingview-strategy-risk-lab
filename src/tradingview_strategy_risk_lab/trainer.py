@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import logging
+
 import numpy as np
+import optuna
 import pandas as pd
 from sklearn.metrics import roc_auc_score
-from sklearn.model_selection import train_test_split
-from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import LabelEncoder
+from sklearn.model_selection import StratifiedKFold, cross_val_score, train_test_split
 from xgboost import XGBClassifier
 
 from tradingview_strategy_risk_lab.data import FEATURE_COLUMNS
@@ -15,21 +16,18 @@ from tradingview_strategy_risk_lab.explainability import (
 )
 from tradingview_strategy_risk_lab.schemas import StrategyRiskReport, TrainingConfig
 
-# Session ordinal encoding: earlier sessions tend to have different volatility profiles
+optuna.logging.set_verbosity(optuna.logging.WARNING)
+
 _SESSION_ORDER = {"asia": 0, "london": 1, "europe": 1, "us": 2, "ny": 2, "other": 1}
 
 
 def _engineer_features(frame: pd.DataFrame) -> pd.DataFrame:
-    """Add pre-trade interaction features without using any post-exit data."""
+    """Pre-trade interaction features — zero lookahead bias."""
     frame = frame.copy()
     frame["session_code"] = frame["session"].map(_SESSION_ORDER).fillna(1).astype(float)
-    # High ATR × negative trend is a fragile setup condition
     frame["atr_trend_x"] = frame["atr_pct"] * frame["trend_score"]
-    # Low volume combined with trend direction
     frame["vol_trend_x"] = frame["volume_z"] * frame["trend_score"]
-    # Side × ATR: shorts in high-ATR environments differ from longs
     frame["side_atr_x"] = frame["side_code"] * frame["atr_pct"]
-    # ATR squared to capture non-linear volatility risk
     frame["atr_pct_sq"] = frame["atr_pct"] ** 2
     return frame
 
@@ -43,17 +41,71 @@ ENGINEERED_FEATURES = FEATURE_COLUMNS + [
 ]
 
 
+def _optuna_objective(
+    trial: optuna.Trial,
+    X: pd.DataFrame,
+    y: pd.Series,
+    scale_pos_weight: float,
+    random_state: int,
+) -> float:
+    params = {
+        "n_estimators": trial.suggest_int("n_estimators", 100, 600),
+        "max_depth": trial.suggest_int("max_depth", 3, 7),
+        "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.2, log=True),
+        "subsample": trial.suggest_float("subsample", 0.6, 1.0),
+        "colsample_bytree": trial.suggest_float("colsample_bytree", 0.5, 1.0),
+        "reg_alpha": trial.suggest_float("reg_alpha", 1e-4, 10.0, log=True),
+        "reg_lambda": trial.suggest_float("reg_lambda", 1e-4, 10.0, log=True),
+        "min_child_weight": trial.suggest_int("min_child_weight", 1, 10),
+        "scale_pos_weight": scale_pos_weight,
+        "eval_metric": "auc",
+        "random_state": random_state,
+        "verbosity": 0,
+    }
+    model = XGBClassifier(**params)
+    cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=random_state)
+    scores = cross_val_score(model, X, y, cv=cv, scoring="roc_auc", n_jobs=-1)
+    return float(scores.mean())
+
+
+def _tune_xgboost(
+    X_train: pd.DataFrame,
+    y_train: pd.Series,
+    scale_pos_weight: float,
+    random_state: int,
+    n_trials: int = 40,
+) -> dict:
+    study = optuna.create_study(
+        direction="maximize",
+        sampler=optuna.samplers.TPESampler(seed=random_state),
+        pruner=optuna.pruners.MedianPruner(n_warmup_steps=10),
+    )
+    study.optimize(
+        lambda trial: _optuna_objective(
+            trial, X_train, y_train, scale_pos_weight, random_state
+        ),
+        n_trials=n_trials,
+        show_progress_bar=False,
+    )
+    best = study.best_params.copy()
+    best["scale_pos_weight"] = scale_pos_weight
+    best["eval_metric"] = "auc"
+    best["random_state"] = random_state
+    best["verbosity"] = 0
+    return best, study.best_value, len(study.trials)
+
+
 def train_strategy_risk_model(frame: pd.DataFrame, config: TrainingConfig) -> StrategyRiskReport:
     if len(frame) < config.min_rows:
         raise ValueError(f"strategy risk modeling needs at least {config.min_rows} trades")
 
     frame = _engineer_features(frame)
-
     target = (frame["pnl_r"] <= config.bad_trade_threshold_r).astype(int)
+
     if target.nunique() != 2:
         raise ValueError("dataset must contain both winning and losing trades")
 
-    x_train, x_test, y_train, y_test = train_test_split(
+    X_train, X_test, y_train, y_test = train_test_split(
         frame[ENGINEERED_FEATURES],
         target,
         test_size=config.test_size,
@@ -62,31 +114,37 @@ def train_strategy_risk_model(frame: pd.DataFrame, config: TrainingConfig) -> St
     )
 
     scale_pos_weight = float((y_train == 0).sum()) / float((y_train == 1).sum())
-    model = XGBClassifier(
-        n_estimators=300,
-        max_depth=4,
-        learning_rate=0.05,
-        subsample=0.85,
-        colsample_bytree=0.85,
-        scale_pos_weight=scale_pos_weight,
-        eval_metric="auc",
-        random_state=config.random_state,
-        verbosity=0,
-    )
-    model.fit(x_train, y_train)
 
-    probabilities = model.predict_proba(x_test)[:, 1]
-    auc = roc_auc_score(y_test, probabilities)
+    best_params, cv_auc, n_trials = _tune_xgboost(
+        X_train, y_train, scale_pos_weight, config.random_state, n_trials=40
+    )
+
+    model = XGBClassifier(**best_params)
+    model.fit(X_train, y_train)
+
+    probabilities = model.predict_proba(X_test)[:, 1]
+    holdout_auc = roc_auc_score(y_test, probabilities)
 
     top_features = _feature_importance(model.feature_importances_, ENGINEERED_FEATURES)
     bad_trade_rate = round(float(target.mean()), 4)
 
     try:
-        shap_features = compute_shap_importances(model, x_test.values, ENGINEERED_FEATURES)
+        shap_features = compute_shap_importances(model, X_test.values, ENGINEERED_FEATURES)
     except Exception:
         shap_features = []
 
     cf_suggestions = make_counterfactual_suggestions(shap_features or top_features, bad_trade_rate)
+
+    hpo_summary = (
+        f"Optuna TPE search: {n_trials} trials, "
+        f"best CV-AUC={cv_auc:.4f}, "
+        f"holdout AUC={holdout_auc:.4f}. "
+        f"Best params: n_est={best_params['n_estimators']}, "
+        f"depth={best_params['max_depth']}, "
+        f"lr={best_params['learning_rate']:.4f}"
+    )
+
+    cf_suggestions = [hpo_summary] + cf_suggestions
 
     return StrategyRiskReport(
         rows=len(frame),
@@ -95,10 +153,10 @@ def train_strategy_risk_model(frame: pd.DataFrame, config: TrainingConfig) -> St
         profit_factor=_profit_factor(frame["pnl_r"]),
         average_r=round(float(frame["pnl_r"].mean()), 4),
         max_drawdown_r=_max_drawdown(frame["pnl_r"]),
-        roc_auc=round(float(auc), 4),
-        holdout_rows=len(x_test),
+        roc_auc=round(float(holdout_auc), 4),
+        holdout_rows=len(X_test),
         feature_count=len(ENGINEERED_FEATURES),
-        evidence_checks=_evidence_checks(frame, config, len(x_test)),
+        evidence_checks=_evidence_checks(frame, config, len(X_test)),
         top_features=top_features,
         shap_features=shap_features,
         filter_suggestions=_filter_suggestions(frame),
@@ -119,12 +177,10 @@ def _feature_importance(
 
 
 def _evidence_checks(
-    frame: pd.DataFrame,
-    config: TrainingConfig,
-    holdout_rows: int,
+    frame: pd.DataFrame, config: TrainingConfig, holdout_rows: int
 ) -> list[dict[str, str]]:
-    forbidden_features = {"pnl_r", "exit_price", "trade_id"}
-    leakage_features = sorted(forbidden_features.intersection(set(ENGINEERED_FEATURES)))
+    forbidden = {"pnl_r", "exit_price", "trade_id"}
+    leakage = sorted(forbidden.intersection(set(ENGINEERED_FEATURES)))
     class_counts = (frame["pnl_r"] <= config.bad_trade_threshold_r).astype(int).value_counts()
     return [
         {
@@ -134,10 +190,10 @@ def _evidence_checks(
         },
         {
             "check": "zero_lookahead_features",
-            "status": "pass" if not leakage_features else "fail",
+            "status": "pass" if not leakage else "fail",
             "evidence": "No post-exit fields are used as features."
-            if not leakage_features
-            else f"Remove leakage features: {', '.join(leakage_features)}.",
+            if not leakage
+            else f"Remove leakage features: {', '.join(leakage)}.",
         },
         {
             "check": "minimum_class_count",
@@ -145,11 +201,14 @@ def _evidence_checks(
             "evidence": f"Bad/good trade class counts: {class_counts.to_dict()}.",
         },
         {
+            "check": "hpo_validation",
+            "status": "pass",
+            "evidence": "Optuna TPE ran 40 trials with 5-fold stratified CV on training set only.",
+        },
+        {
             "check": "claim_boundary",
             "status": "review",
-            "evidence": (
-                "Risk model explains historical fragility; it is not a live execution rule."
-            ),
+            "evidence": "Risk model explains historical fragility; not a live execution rule.",
         },
     ]
 
@@ -159,50 +218,47 @@ def _counterfactual_hint(top_features: list[dict[str, float | str]]) -> str:
         return "No stable driver found."
     feature = str(top_features[0]["feature"])
     return (
-        f"Start the counterfactual review with {feature}. Compare the bad-trade rate before "
-        "and after tightening that condition before using it as a live filter."
+        f"Primary SHAP driver: {feature}. "
+        "Compare bad-trade rate above vs. below its median before deploying as a live filter."
     )
 
 
 def _profit_factor(pnl_r: pd.Series) -> float:
     gains = float(pnl_r[pnl_r > 0].sum())
     losses = abs(float(pnl_r[pnl_r < 0].sum()))
-    if losses == 0:
-        return round(gains, 4)
-    return round(gains / losses, 4)
+    return round(gains / losses, 4) if losses > 0 else round(gains, 4)
 
 
 def _max_drawdown(pnl_r: pd.Series) -> float:
     equity = pnl_r.cumsum()
-    drawdown = equity - equity.cummax()
-    return round(abs(float(drawdown.min())), 4)
+    return round(abs(float((equity - equity.cummax()).min())), 4)
 
 
 def _filter_suggestions(frame: pd.DataFrame) -> list[dict[str, float | str]]:
-    suggestions: list[dict[str, float | str]] = []
     bad_trade = frame["pnl_r"] <= 0
+    overall = float(bad_trade.mean())
     candidates = [
         ("atr_pct", ">=", float(frame["atr_pct"].quantile(0.75))),
         ("volume_z", "<=", float(frame["volume_z"].quantile(0.25))),
         ("trend_score", "<=", float(frame["trend_score"].quantile(0.25))),
         ("atr_trend_x", "<=", float(frame["atr_trend_x"].quantile(0.25))),
     ]
-    overall_bad_rate = float(bad_trade.mean())
-    for feature, operator, threshold in candidates:
-        mask = frame[feature] >= threshold if operator == ">=" else frame[feature] <= threshold
-        if int(mask.sum()) < 3:
+    suggestions = []
+    for feature, op, threshold in candidates:
+        mask = frame[feature] >= threshold if op == ">=" else frame[feature] <= threshold
+        if mask.sum() < 3:
             continue
-        condition_bad_rate = float(bad_trade[mask].mean())
-        if condition_bad_rate <= overall_bad_rate:
+        rate = float(bad_trade[mask].mean())
+        if rate <= overall:
             continue
         suggestions.append(
             {
-                "condition": f"{feature} {operator} {threshold:.4f}",
-                "bad_trade_rate": round(condition_bad_rate, 4),
-                "baseline_bad_trade_rate": round(overall_bad_rate, 4),
+                "condition": f"{feature} {op} {threshold:.4f}",
+                "bad_trade_rate": round(rate, 4),
+                "baseline_bad_trade_rate": round(overall, 4),
                 "suggested_filter": (
-                    f"Review trades where {feature} is {operator} {threshold:.4f}; "
-                    "do not deploy the filter until it survives holdout review."
+                    f"Review trades where {feature} {op} {threshold:.4f}; "
+                    "validate on holdout before deploying."
                 ),
             }
         )
