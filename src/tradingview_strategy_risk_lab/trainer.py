@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import logging
-
 import numpy as np
 import optuna
 import pandas as pd
@@ -32,7 +30,8 @@ def _engineer_features(frame: pd.DataFrame) -> pd.DataFrame:
     return frame
 
 
-ENGINEERED_FEATURES = FEATURE_COLUMNS + [
+ENGINEERED_FEATURES = [
+    *FEATURE_COLUMNS,
     "session_code",
     "atr_trend_x",
     "vol_trend_x",
@@ -144,7 +143,7 @@ def train_strategy_risk_model(frame: pd.DataFrame, config: TrainingConfig) -> St
         f"lr={best_params['learning_rate']:.4f}"
     )
 
-    cf_suggestions = [hpo_summary] + cf_suggestions
+    cf_suggestions = [hpo_summary, *cf_suggestions]
 
     return StrategyRiskReport(
         rows=len(frame),
