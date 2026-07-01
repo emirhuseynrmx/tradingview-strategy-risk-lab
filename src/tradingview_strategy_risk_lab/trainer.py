@@ -214,11 +214,12 @@ def _evidence_checks(
 
 def _counterfactual_hint(top_features: list[dict[str, float | str]]) -> str:
     if not top_features:
-        return "No stable driver found."
+        return "No stable driver found. Run counterfactual analysis on a larger dataset."
     feature = str(top_features[0]["feature"])
     return (
         f"Primary SHAP driver: {feature}. "
-        "Compare bad-trade rate above vs. below its median before deploying as a live filter."
+        "Counterfactual: compare bad-trade rate above vs. below its median "
+        "before deploying as a live filter."
     )
 
 
