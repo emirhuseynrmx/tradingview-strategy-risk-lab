@@ -13,13 +13,16 @@ authors = [{ name = "Emir Huseyin Inci" }]
 dependencies = [
     "kaggle>=1.6",
     "litestar>=2.13",
+    "numba>=0.59",
     "numpy>=1.26",
     "pandas>=2.2",
     "pandera>=0.21",
     "pydantic>=2.7",
     "scikit-learn>=1.4",
+    "shap>=0.46",
     "typer>=0.12",
     "uvicorn>=0.30",
+    "xgboost>=2.0",
 ]
 
 [project.optional-dependencies]

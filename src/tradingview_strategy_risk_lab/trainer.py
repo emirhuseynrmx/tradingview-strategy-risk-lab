@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
-from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import roc_auc_score
 from sklearn.model_selection import train_test_split
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import LabelEncoder
+from xgboost import XGBClassifier
 
 from tradingview_strategy_risk_lab.data import FEATURE_COLUMNS
 from tradingview_strategy_risk_lab.explainability import (
@@ -13,37 +15,74 @@ from tradingview_strategy_risk_lab.explainability import (
 )
 from tradingview_strategy_risk_lab.schemas import StrategyRiskReport, TrainingConfig
 
+# Session ordinal encoding: earlier sessions tend to have different volatility profiles
+_SESSION_ORDER = {"asia": 0, "london": 1, "europe": 1, "us": 2, "ny": 2, "other": 1}
+
+
+def _engineer_features(frame: pd.DataFrame) -> pd.DataFrame:
+    """Add pre-trade interaction features without using any post-exit data."""
+    frame = frame.copy()
+    frame["session_code"] = frame["session"].map(_SESSION_ORDER).fillna(1).astype(float)
+    # High ATR × negative trend is a fragile setup condition
+    frame["atr_trend_x"] = frame["atr_pct"] * frame["trend_score"]
+    # Low volume combined with trend direction
+    frame["vol_trend_x"] = frame["volume_z"] * frame["trend_score"]
+    # Side × ATR: shorts in high-ATR environments differ from longs
+    frame["side_atr_x"] = frame["side_code"] * frame["atr_pct"]
+    # ATR squared to capture non-linear volatility risk
+    frame["atr_pct_sq"] = frame["atr_pct"] ** 2
+    return frame
+
+
+ENGINEERED_FEATURES = FEATURE_COLUMNS + [
+    "session_code",
+    "atr_trend_x",
+    "vol_trend_x",
+    "side_atr_x",
+    "atr_pct_sq",
+]
+
 
 def train_strategy_risk_model(frame: pd.DataFrame, config: TrainingConfig) -> StrategyRiskReport:
     if len(frame) < config.min_rows:
         raise ValueError(f"strategy risk modeling needs at least {config.min_rows} trades")
+
+    frame = _engineer_features(frame)
 
     target = (frame["pnl_r"] <= config.bad_trade_threshold_r).astype(int)
     if target.nunique() != 2:
         raise ValueError("dataset must contain both winning and losing trades")
 
     x_train, x_test, y_train, y_test = train_test_split(
-        frame[FEATURE_COLUMNS],
+        frame[ENGINEERED_FEATURES],
         target,
         test_size=config.test_size,
         random_state=config.random_state,
         stratify=target,
     )
-    model = RandomForestClassifier(
-        n_estimators=120,
-        min_samples_leaf=3,
+
+    scale_pos_weight = float((y_train == 0).sum()) / float((y_train == 1).sum())
+    model = XGBClassifier(
+        n_estimators=300,
+        max_depth=4,
+        learning_rate=0.05,
+        subsample=0.85,
+        colsample_bytree=0.85,
+        scale_pos_weight=scale_pos_weight,
+        eval_metric="auc",
         random_state=config.random_state,
-        class_weight="balanced",
+        verbosity=0,
     )
     model.fit(x_train, y_train)
+
     probabilities = model.predict_proba(x_test)[:, 1]
     auc = roc_auc_score(y_test, probabilities)
 
-    top_features = _feature_importance(model.feature_importances_)
+    top_features = _feature_importance(model.feature_importances_, ENGINEERED_FEATURES)
     bad_trade_rate = round(float(target.mean()), 4)
 
     try:
-        shap_features = compute_shap_importances(model, x_test.values, FEATURE_COLUMNS)
+        shap_features = compute_shap_importances(model, x_test.values, ENGINEERED_FEATURES)
     except Exception:
         shap_features = []
 
@@ -58,7 +97,7 @@ def train_strategy_risk_model(frame: pd.DataFrame, config: TrainingConfig) -> St
         max_drawdown_r=_max_drawdown(frame["pnl_r"]),
         roc_auc=round(float(auc), 4),
         holdout_rows=len(x_test),
-        feature_count=len(FEATURE_COLUMNS),
+        feature_count=len(ENGINEERED_FEATURES),
         evidence_checks=_evidence_checks(frame, config, len(x_test)),
         top_features=top_features,
         shap_features=shap_features,
@@ -68,11 +107,14 @@ def train_strategy_risk_model(frame: pd.DataFrame, config: TrainingConfig) -> St
     )
 
 
-def _feature_importance(importances: np.ndarray) -> list[dict[str, float | str]]:
-    order = np.argsort(importances)[::-1][:5]
+def _feature_importance(
+    importances: np.ndarray, feature_names: list[str]
+) -> list[dict[str, float | str]]:
+    order = np.argsort(importances)[::-1][:8]
     return [
-        {"feature": FEATURE_COLUMNS[index], "importance": round(float(importances[index]), 5)}
-        for index in order
+        {"feature": feature_names[i], "importance": round(float(importances[i]), 5)}
+        for i in order
+        if float(importances[i]) > 0
     ]
 
 
@@ -82,7 +124,7 @@ def _evidence_checks(
     holdout_rows: int,
 ) -> list[dict[str, str]]:
     forbidden_features = {"pnl_r", "exit_price", "trade_id"}
-    leakage_features = sorted(forbidden_features.intersection(FEATURE_COLUMNS))
+    leakage_features = sorted(forbidden_features.intersection(set(ENGINEERED_FEATURES)))
     class_counts = (frame["pnl_r"] <= config.bad_trade_threshold_r).astype(int).value_counts()
     return [
         {
@@ -143,6 +185,7 @@ def _filter_suggestions(frame: pd.DataFrame) -> list[dict[str, float | str]]:
         ("atr_pct", ">=", float(frame["atr_pct"].quantile(0.75))),
         ("volume_z", "<=", float(frame["volume_z"].quantile(0.25))),
         ("trend_score", "<=", float(frame["trend_score"].quantile(0.25))),
+        ("atr_trend_x", "<=", float(frame["atr_trend_x"].quantile(0.25))),
     ]
     overall_bad_rate = float(bad_trade.mean())
     for feature, operator, threshold in candidates:
