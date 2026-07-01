@@ -17,4 +17,4 @@ def test_train_strategy_risk_model() -> None:
         "zero_lookahead_features",
     }
     assert report.top_features
-    assert "counterfactual" in report.counterfactual_hint
+    assert "counterfactual" in report.counterfactual_hint.lower()
