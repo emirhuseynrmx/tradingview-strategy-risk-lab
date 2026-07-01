@@ -1,0 +1,13 @@
+﻿{
+  "run_at": "2026-07-01T06:24:24Z",
+  "runtime_seconds": 3.1,
+  "cli": "uv run tv-risk-lab --csv-path examples/trades.csv",
+  "input": "examples/trades.csv",
+  "trades_analysed": 1500,
+  "holdout_rows": 375,
+  "win_rate": 0.5293,
+  "bad_trade_rate": 0.4707,
+  "profit_factor": 1.148,
+  "roc_auc": 0.5594,
+  "outputs": ["outputs/risk_report.json"]
+}

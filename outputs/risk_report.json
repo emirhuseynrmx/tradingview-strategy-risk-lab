@@ -1,0 +1,73 @@
+﻿{
+  "rows": 1500,
+  "bad_trade_rate": 0.4707,
+  "win_rate": 0.5293,
+  "profit_factor": 1.1483,
+  "average_r": 0.088,
+  "max_drawdown_r": 29.6876,
+  "roc_auc": 0.5594,
+  "holdout_rows": 375,
+  "feature_count": 4,
+  "evidence_checks": [
+    {
+      "check": "holdout_split",
+      "status": "pass",
+      "evidence": "375 trades reserved for holdout scoring."
+    },
+    {
+      "check": "zero_lookahead_features",
+      "status": "pass",
+      "evidence": "No post-exit fields are used as features."
+    },
+    {
+      "check": "minimum_class_count",
+      "status": "pass",
+      "evidence": "Bad/good trade class counts: {0: 794, 1: 706}."
+    },
+    {
+      "check": "claim_boundary",
+      "status": "review",
+      "evidence": "Risk model explains historical fragility; it is not a live execution rule."
+    }
+  ],
+  "top_features": [
+    {
+      "feature": "trend_score",
+      "importance": 0.34313
+    },
+    {
+      "feature": "atr_pct",
+      "importance": 0.32508
+    },
+    {
+      "feature": "volume_z",
+      "importance": 0.30714
+    },
+    {
+      "feature": "side_code",
+      "importance": 0.02466
+    }
+  ],
+  "shap_features": [],
+  "filter_suggestions": [
+    {
+      "condition": "atr_pct >= 0.0381",
+      "bad_trade_rate": 0.488,
+      "baseline_bad_trade_rate": 0.4707,
+      "suggested_filter": "Review trades where atr_pct is >= 0.0381; do not deploy the filter until it survives holdout review."
+    },
+    {
+      "condition": "trend_score <= -0.1433",
+      "bad_trade_rate": 0.5173,
+      "baseline_bad_trade_rate": 0.4707,
+      "suggested_filter": "Review trades where trend_score is <= -0.1433; do not deploy the filter until it survives holdout review."
+    }
+  ],
+  "counterfactual_hint": "Start the counterfactual review with trend_score. Compare the bad-trade rate before and after tightening that condition before using it as a live filter.",
+  "counterfactual_suggestions": [
+    "Primary driver is 'trend_score' — compare bad-trade rate above vs. below its median.",
+    "Overall bad-trade rate is 47.1%. Tighten 'trend_score' filter and measure holdout impact before deploying.",
+    "Secondary driver 'atr_pct' is orthogonal — test a compound filter (trend_score AND atr_pct) on out-of-sample data.",
+    "Keep immutable trade context (symbol, session) fixed; only adjust actionable setup conditions when testing counterfactuals."
+  ]
+}
